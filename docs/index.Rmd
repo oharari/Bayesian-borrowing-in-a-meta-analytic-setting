@@ -1,0 +1,546 @@
+---
+output:
+  html_document: 
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: united
+sansfont: LiberationSans
+bibliography: References.bib
+csl: biomed-central.csl
+csl-entry-spacing: 1em
+nocite: '@*'
+link-citations: true
+---
+<!-- <script> -->
+<!--    $(document).ready(function() { -->
+<!--      $head = $('#header'); -->
+<!--      $head.prepend('<img src=\"CytelLogo.png\" style=\"float: right;width: 150px;\"/>') -->
+<!--    }); -->
+<!-- </script> -->
+<script>
+$(document).ready(function() {
+$head = $('#header');
+$head.prepend('<img src=\"CytelLogo.png\" style=\"float: right;width: 125px;\"/>')
+});
+</script>
+
+---
+title:  "Alone, together: on the benefits of Bayesian borrowing in a meta-analytic setting"
+author: "Ofir Harari, Mohsen Soltanifar, Andre Verhoek & Bart Heeg"
+date:   "March 3, 2023"
+output:
+html_document:
+df_print: paged
+---
+
+<style>
+p {line-height: 1.75em;}
+</style>    
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+The following tutorial is a step-by-step demo of the methods presented in our paper. You may use the attached R files to replicate the below results or experiment with it.
+
+# Before we start
+Please make sure the following libraries are installed on your computer --
+```{r pack-load-chunk, echo=TRUE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(lemon)
+library(coda)
+library(mcmcplots)
+library(dplyr)
+library(rstan)
+library(scales)
+library(kableExtra)
+library(reshape2)
+library(LaplacesDemon)
+library(doParallel)
+library(doSNOW)
+library(parallel)
+library(latex2exp)
+library(patchwork)
+library(cobs)
+```
+
+Setting the working directory and sourcing the custom functions --
+```{r func-source-chunk, echo=TRUE}
+#Setting working directory to current one
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+#Sourcing functions
+source('Alone_Together_Functions.R')
+```
+
+# Bayesian inference and variance estimation
+
+We start by replicating the toy data used throughout the paper.
+## Simulating data
+
+These are the inputs used to generate the five simulated aggregate-level trials --
+```{r input-chunk, echo=TRUE}
+seed = 20 
+set.seed(seed)
+
+alpha = .05 # 1 - confidence level for confidence/credible intervals
+K = 5 # number of (aggregate-level data) studies
+p_ctrl = .4 # control event rate
+p_trt = .3 # treatment event rates
+sigma2_ctrl = 0.2 # control event rate variance (on the logit scale)
+sigma2_trt = 0.2 # treatment event rate variance (on the logit scale)
+n_ctrl = 75 # control group sample size per study
+n_trt = 75 # treatment group sample size per study
+```
+
+
+And the data itself --
+```{r sim-data-chunk, echo=TRUE, cache = TRUE}
+data = random_data(K = K, p_ctrl = p_ctrl, p_trt = p_trt, 
+                   sigma2_ctrl = sigma2_ctrl, 
+                   sigma2_trt = sigma2_trt, 
+                   n_ctrl = n_ctrl, n_trt = n_trt)
+```
+
+```{r data-display-chunk, echo=TRUE}
+display_simulated_data(data)
+```
+
+The following will be fed into the various functions to facilitate Bayesian borrowing --
+```{r var-assign-chunk, echo = TRUE}
+theta_vec = data$theta_vec
+theta_hat_vec = data$theta_hat_vec
+sigma2_vec = data$sigma2_vec
+```
+
+## Fitting models
+In this section we will re-estimate the study-specific treatment effect using various estimation/plug-in methods for the heterogeneity parameter $\nu^2$.
+
+### Bayesian borrowing by restricting the borrowing fraction
+We start by requiring that the borrowing fraction of any of the first four study be no greater than 0.25 in the informing of the fifth one, and find the maximum $\nu^2$ value to warrant that (here the value of 0.036 was found by a simple line search) -- 
+```{r omega-input-chunk, echo=TRUE}
+trial_number = 5
+target_nu2 = .036
+nu2_min = .01
+nu2_max = .1
+nu2_delta = .0001
+```
+
+```{r omega-plot-chunk, echo=TRUE, fig.align = 'center', cache = TRUE, fig.width=10, fig.height=4}
+weight_vs_nu2_plot(sigma2_vec, nu2_min, nu2_max, 
+                   nu2_delta, trial_number, target_nu2)
+```
+
+We then update the posterior mean treatment effects and uncertainty intervals and store them.
+```{r omega-fit-chunk, echo=TRUE, cache = TRUE}
+out_max_BFP = output_fixed_nu(theta_hat_vec, sigma2_vec, 
+                              alpha = .05, nu2 = target_nu2)
+```
+
+### Bayesian borrowing by Empirical Bayes
+Next, we plug in the maximum (marginal) likelihood estimate of $\nu^2$ and store the results.
+```{r Emp-Bayes-fit-chunk, echo=TRUE, cache = TRUE}
+out_Emp_Bayes = output(theta_hat_vec, sigma2_vec, alpha = .05)
+```
+
+Visually, this is what the log-likelihood looks like as a function of $\nu^2$ --
+```{r nu2-est-plot-chunk, echo=TRUE, fig.align = 'center', cache = TRUE, fig.width=6, fig.height=4}
+nu2_hat = out_Emp_Bayes$nu2_hat
+nu2_est_plot(sigma2_vec, theta_hat_vec, nu2_hat)
+```
+
+### Bayesian borrowing by Full Bayes
+Finally, we assign $\nu^2$ a prior distribution and run a Stan program to fit a full Bayesian model.
+```{r stan-fit-chunk, echo=TRUE, cache = TRUE, warning=FALSE, message = FALSE, results="hide"}
+fit = stan_run(theta_hat_vec, sigma2_vec, N_iter = 1e5,  N_chains = 4, thin_fact = 10)
+```
+
+Some numeric convergence diagnostics --
+```{r stan-summary-chunk, echo=TRUE, fig.align = 'center', cache = TRUE, fig.width=6, fig.height=4}
+summary(fit)$summary %>% apply(., 2, round, digits = 2)
+```
+
+And visual inspection --
+```{r stan-diagnostic-plot-chunk, echo=TRUE, fig.align = 'center', cache = TRUE, message = FALSE, fig.width=8, fig.height=8}
+stan_diagnostics(fit)
+```
+
+And here is the posterior distribution of $\nu^2$, whose variance propagates into the (inflated) uncertainty intervals --
+```{r staun-nu2-plot-chunk, echo=TRUE, fig.align = 'center', cache = TRUE, warning = FALSE, fig.width=6, fig.height=4}
+nu2_posterior_plot(fit, x_lim = .3)
+```
+
+### Comparing them all
+We may now compare the different methods for this one-off dataset. Uninformed estimates and the "true" (simulated) treatment effects are also included for good measure.
+```{r comparison-table-chunk, echo=TRUE, cache = TRUE}
+Comparison = Method_comparison(fit, out_Emp_Bayes, theta_vec, theta_hat_vec, out_max_BFP)
+
+Comparison$Table %>% 
+  kable(align = c('c', rep('r', ncol(Comparison$Table) - 1)), 
+        'html', escape = F) %>%
+  kable_styling(full_width = F, font_size = 14,
+                bootstrap_options = c("striped")) %>%
+  row_spec(0, font_size = 14, align = 'c')
+```
+
+```{r comparison-plot-chunk, echo=TRUE, fig.align = 'center', cache = TRUE, warning = FALSE, fig.width=7, fig.height=6}
+Comparison$Plot
+```
+
+# Estimation benefits
+In this section we replicate the theoretical and simulation results from the matching section in our paper.
+
+## Theoretical estimation analysis
+First, we calculate the theoretical RMSEs for the samples treatment effects, with and without borrowing --
+```{r RMSE-calc-chunk, echo=TRUE, fig.align='center', fig.height=6, fig.width=8, message=FALSE, warning=FALSE, cache=TRUE}
+nu2_vec = seq(0, .75, length = 5000)
+
+out = RMSE_vs_nu2_plot_table(nu2_vec, sigma2_vec, nu2_hat, theta_vec, theta_hat_vec)
+```
+
+The plot and the table display the RMSE values at the $\nu^2$ value selected through empirical Bayes vs. the "naive" ones --
+```{r RMSE-plot-table-chunk, echo=TRUE, fig.align='center', fig.height=6, fig.width=8, message=FALSE, warning=FALSE, cache=TRUE}
+out$Table
+out$Plot
+```
+
+
+## Empirical estimation analysis by simulation
+The following simulation, in which we draw at random 100,000 datasets and compare the resultant RMSE (using empirical Bayes) and interval coverage with those of the "naive" estimates, also appears in the paper. Note that the 'high heterogeneity' scenario includes double the variance (on the logit scale) about the sampled treatment effects --
+```{r RMSE-simulation-chunk, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE, results = FALSE}
+sim_small_nu2 = adj_vs_unadj_simulation(K = 5, 
+                                        p_ctrl = .4, 
+                                        p_trt = .3, 
+                                        sigma2_ctrl = .2, 
+                                        sigma2_trt = .2, 
+                                        n_ctrl = 75, 
+                                        n_trt = 75, 
+                                        alpha = .05, 
+                                        N_sims = 1e5) %>% 
+  mutate(Heterogeneity = 'Low')
+
+
+sim_large_nu2 = adj_vs_unadj_simulation(K = 5, 
+                                        p_ctrl = .4, 
+                                        p_trt = .3, 
+                                        sigma2_ctrl = .4, 
+                                        sigma2_trt = .4, 
+                                        n_ctrl = 75, 
+                                        n_trt = 75, 
+                                        alpha = .05, 
+                                        N_sims = 1e5) %>% 
+  mutate(Heterogeneity = 'High')
+
+sim = rbind(sim_small_nu2, sim_large_nu2)
+sim[sim == Inf] = NA
+```
+
+```{r RMSE-sim-table-chunck, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+sim %>% 
+  mutate(Heterogeneity = factor(Heterogeneity, 
+                                levels = c('Low', 'High'))) %>% 
+  group_by(Heterogeneity, Type) %>% 
+  summarize(Bias = mean(delta, na.rm = T),
+            RMSE = sqrt(mean(delta^2, na.rm = T)),
+            Length = mean(CI_length, na.rm = T),
+            Coverage = mean(covered, na.rm = T)) %>% 
+  mutate(across(where(is.numeric), round, 3)) %>% 
+  mutate(Coverage = paste0(100*Coverage, '%')) %>% 
+  kable(align = 'c') %>%
+  kable_styling(full_width = F, font_size = 14,
+                bootstrap_options = c("striped")) %>%
+  row_spec(0, font_size = 14) 
+```
+
+
+# Design benefits
+In this section we compare power and sample size requirements for the "informed" model with those of the "naive" one. 
+
+## Power calculations
+We start by calculating the power for the informed model when applied to the design of a sixth trial, to be informed by the earlier five. Here, we set sample size to 339 patients per arm and the posterior probability of efficacy threshold to 1 - 0.008 = 0.992, to ensure 80% power and 2.5% one-sided type I error rate. 
+```{r informed-power-chunck, echo = TRUE, cache = TRUE}
+power_func_sim(n = 339, CER = .4, RR = 1, N_MC = 1e5, theta_hat_vec, sigma2_vec, alpha = .008090097)
+# 2.5% type I error rate for the informed model
+
+power_func_sim(n = 339, CER = .4, RR = .75, N_MC = 1e5, theta_hat_vec, sigma2_vec, alpha = .008090097)
+# 80% power for the informed model
+```
+
+If we think in a purely Bayesian manner, we will find that in order to achieve an identical power for the same posterior probability of efficacy threshold, the "non-informed" beta-binomial model will require 478 patients per arm. However, the type I error rate for this setting will be less than 1%.
+```{r uninformed-power-chunck, echo = TRUE, cache = TRUE}
+beta_power_func(CER = .4, RR = 1, n = 478, N_MC = 5e3, alpha = .008090097, N_sim = 1e5)
+# 0.865% type I error rate for the uninformed model
+beta_power_func(CER = .4, RR = .75, n = 478, N_MC = 5e3, alpha = .008090097, N_sim = 1e5)
+# 80% power for the uninformed model
+```
+
+When calibrating the threshold to a 2.5% type I error rate, the sample size requirements reduce to 360 patients per arm. 
+```{r uninformed-calibrated-power-chunck, echo = TRUE, cache = TRUE}
+beta_power_func(CER = .4, RR = 1, n = 360, N_MC = 5e3, alpha = .0245, N_sim = 5e4)
+# 2.5% type I error rate for the uninformed model
+beta_power_func(CER = .4, RR = .75, n = 360, N_MC = 5e3, alpha = .0245, N_sim = 5e4)
+# 80% power for the uninformed model
+```
+This is the usual conflict between the Bayesian and the frequentist perceptions.
+
+
+### Power vs. sample size (for a fixed treatment effect) 
+If we are to be "true" Bayesians for a moment, and fix the threshold at 0.992, we may calculate the power for both models versus the sample size --
+```{r power-vs-n-inputs-chunk, echo = TRUE}
+RR = .75
+CER = .4
+N_MC = 2.5e3
+alpha = .008090097
+N_sim = 3e4
+n_vec = seq(199, 750, by = 4)
+```
+
+```{r power-vs-n-df-chunk, eval=FALSE}
+df = power_vs_n_df(n_vec, CER, RR, N_MC, theta_hat_vec, sigma2_vec, alpha, N_sim)
+```
+
+```{r power-vs-n-df-read-chunk, echo = FALSE}
+load("power_samp_size_df.Rda")
+```
+
+```{r power-vs-n-plot-chunk, echo = TRUE, fig.align='center', fig.height=4.5, fig.width=6.5, message=FALSE, warning=FALSE, cache=TRUE}
+power_vs_n_plot(df, power_thresh = 0.8)
+```
+
+
+### Power vs. relative rate reduction (for a fixed sample size) 
+We can also fix the sample size at 500 patients per arm, and plot the power as a function of the treatment effect (in terms of the relative risk reduction) --
+```{r power-vs-RRR-inputs-chunk, echo = TRUE}
+RR_vec = seq(.675, .95, length = 200)
+n = 500
+```
+
+```{r power-vs-RRR-df-chunk, eval=FALSE}
+df = power_vs_RRR_df(n, CER, RR_vec, N_MC, theta_hat_vec, sigma2_vec, alpha, N_sim)
+```
+
+```{r power-vs-RRR-df-read-chunk, echo = FALSE}
+load("power_rel_risk_reduct_df.Rda")
+```
+
+```{r power-vs-RRR-plot-chunk, echo = TRUE, fig.align='center', fig.height=4.5, fig.width=6.5, message=FALSE, warning=FALSE}
+power_vs_RRR_plot(df, power_thresh = 0.8)
+```
+
+# Real world application: Belimumab for the treatment of Systemic Lupus Erythematosus
+Here we replicate the analysis of the real world application appearing in the one-before-last section of our paper.
+
+## Reading in the data 
+The data were extracted from the FDA report @FDA2018.
+
+### Treatment effects
+Log odds-ratios of NCT00410384, NCT00424476 and NCT01649765, by order --
+```{r Lupus-TE-chunk, echo = TRUE}
+theta_hat_vec = c(log(1.08) + log(2.19/1.08)/2, 
+                  log(1.3) + log(2.59/1.3)/2, 
+                  log(0.64) + log(3.46/0.64)/2)
+```
+
+### Variances
+The corresponding variances, derived from the published confidence intervals --
+```{r Lupus-var-chunk, echo = TRUE}
+sigma2_vec = c((log(2.19/1.08)/3.92)^2, (log(2.59/1.3)/3.92)^2, 
+               (log(3.46/0.64)/3.92)^2)
+```
+
+## Design
+
+### Calibrating to type I error rate constraints
+
+```{r Lupus-calibrated-power-chunk, echo = TRUE, cache = TRUE}
+power_func_sim_OR(n = 396, CER = .4, OR = 1, N_MC = 1e5, theta_hat_vec, sigma2_vec, alpha = 1.05e-5)
+power_func_sim_OR(n = 396, CER = .4, OR = 1.5, N_MC = 1e5, theta_hat_vec, sigma2_vec, alpha = 1.05e-5)
+```
+
+Enrolling this many patients surely won't be possible. We will not be able to abide by the 2.5% type I error rate requirement. From now on it's all Bayesian considerations.
+
+### Designing for a maximum borrowing fraction
+We will hereafter limit ourselves to $n=50$ patients/arm. We start by calculating a vector of study-to-study variances from a vector of borrowing fractions --
+```{r Lupus-weight-to-nu2-chunk, echo = TRUE, cache = TRUE}
+n = 50
+
+weight_seq = seq(.15, .35, by = .005)
+nu2_vec = sapply(weight_seq, weight_to_nu2,
+                 sigma2_vec = c(sigma2_vec, 
+                                (trt_eff_to_sd_OR(n, .4, log(1.5)))^2)
+)
+```
+
+We then calculate the power with respect to 97.5% and 99% posterior probability of efficacy for every such borrowing fraction --
+
+```{r Lupus-power-chunk, echo = TRUE, eval = FALSE}
+power975 = sapply(nu2_vec, power_func_sim_OR_fixed_nu2,
+                  n = n, CER = 0.4, OR = 1.5, N_MC = 1e5,
+                  theta_hat_vec = theta_hat_vec,
+                  sigma2_vec = sigma2_vec, alpha = .025)
+
+power99 = sapply(nu2_vec, power_func_sim_OR_fixed_nu2,
+                 n = n, CER = 0.4, OR = 1.5, N_MC = 1e5,
+                 theta_hat_vec = theta_hat_vec,
+                 sigma2_vec = sigma2_vec, alpha = .01)
+```
+
+We store the results in a data frame --
+
+```{r Lupus-power-df2-chunk, echo = TRUE, eval = FALSE}
+df = data.frame(weight = rep(weight_seq, 2),
+                Power = c(power975, power99),
+                Threshold = c(rep('97.5%', length(weight_seq)),
+                              rep('99.0%', length(weight_seq))))
+```
+
+```{r lupus-power-df-read-chunk, echo = FALSE}
+load("Lupus_power_df.Rda")
+```
+
+and find the minimum borrowing fractions that lead to meeting the thresholds --
+
+```{r Lupus-power-df-chunk, echo = TRUE}
+target_weight = df %>% 
+  group_by(Threshold) %>% 
+  summarize(target_weight = weight_seq[min(which(Power >= .8))]) %>% 
+  as.data.frame() %>% 
+  dplyr::select(target_weight) %>% 
+  as.vector() %>% 
+  unlist()
+
+target_power = rbind(
+  df %>% 
+    filter(Threshold == "97.5%" & weight == target_weight[1]),
+  df %>% 
+    filter(Threshold == "99.0%" & weight == target_weight[2])
+) %>% 
+  dplyr::select(Power)
+
+(targets = data.frame(Threshold = c("97.5%", "99.0%"),
+                      Power = target_power,
+                      Weight = target_weight))
+```
+
+We may now plot the power curves --
+```{r Lupus-power-plot-chunk, echo = TRUE, fig.align='center', fig.height=4.5, fig.width=6.5, message=FALSE, warning=FALSE}
+ggplot(df, aes(weight, Power, col = Threshold)) +
+  geom_line(linewidth = 1) + 
+  geom_segment(targets,
+               mapping = aes(x = Weight, xend = Weight,
+                             y = 0, yend = Power),
+               linetype = 'dashed') +
+  geom_segment(targets,
+               mapping = aes(x = min(df$weight), xend = Weight,
+                             y = Power, yend = Power),
+               linetype = 'dashed') +
+  geom_point(targets,
+             mapping = aes(x = Weight, y = Power), 
+             shape = 21, size = 2, fill = "white", stroke = 1.5) + 
+  theme(panel.background = element_blank(),
+        panel.grid.major = element_line(colour = "grey92"),
+        legend.position = 'top',
+        axis.text.x = element_text(size=10),
+        axis.title.x = element_text(size=20, face="bold"),
+        axis.title.y = element_text(size=14, face="bold"),
+        axis.text.y = element_text(size=10),
+        axis.line=element_line()) + 
+  xlab(expression(omega)) + 
+  scale_x_continuous(expand = expansion(mult = c(0, 0.05))) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05)),
+                     labels = scales::percent) +
+  scale_color_brewer(palette = "Set1")
+```
+
+A possible decision rule may now be that the treatment is considered to be effective in pediatric patients if the resultant borrowing fraction required to meet the 97.5% (or 99%) threshold does not exceed 0.26 (0.35).
+
+## Analysis
+We start by jointly analyzing the three trials for a vector of borrowing fractions, calculating both 95% and 98% credible intervals --
+```{r Lupus-analysis-chunk, echo = TRUE, cache = TRUE}
+weight_vec = seq(0, 1, by = .005)
+
+out95 = t(sapply(weight_vec, output_fixed_w,
+                 theta_hat_vec = theta_hat_vec,
+                 sigma2_vec = sigma2_vec,
+                 alpha = .05))
+
+out98 = t(sapply(weight_vec, output_fixed_w,
+                 theta_hat_vec = theta_hat_vec,
+                 sigma2_vec = sigma2_vec,
+                 alpha = .02))
+```
+
+We then store the results in a data frame and calculate the minimum borrowing fractions required for the intervals to be entirely to the right of the null, as well as the posterior probabilities of efficacy  --
+
+```{r Lupus-analysis-df-chunk, echo = TRUE, cache = TRUE}
+df = as.data.frame(rbind(out95, out98)) %>% 
+  mutate(Weight = rep(weight_vec, 2),
+         Coverage = rep(c('95%', '98%'), each = length(weight_vec))) %>% 
+  setNames(c('Mean', 'LL', 'UL', 'Weight', 'Coverage'))
+
+# Is this smaller than 0.26?
+(min_weight95 = df$Weight[min(which(df$Coverage == '95%' & df$LL >= 0))])
+#Is this smaller than 0.35?
+(min_weight98 = df$Weight[min(which(df$Coverage == '98%' & df$LL >= 0))])
+```
+
+The results can now be plotted --
+```{r Lupus-analysis-plot-chunk, echo = TRUE, cache = TRUE, fig.align='center', fig.height=4.5, fig.width=6.5, message=FALSE, warning=FALSE}
+ggplot(df) + 
+  geom_line(aes(Weight, LL, col = Coverage), 
+            linetype = 'dashed', linewidth = 1) + 
+  geom_line(aes(Weight, UL, col = Coverage), 
+            linetype = 'dashed', linewidth = 1) + 
+  geom_line(aes(Weight, Mean), 
+            linetype = 'dashed', linewidth = 1) + 
+  geom_hline(yintercept = 0, col = 'black') + 
+  geom_segment(aes(x = min_weight95, xend = min_weight95,
+                   y = -Inf, yend = 0)) + 
+  geom_segment(aes(x = min_weight98, xend = min_weight98,
+                   y = -Inf, yend = 0)) + 
+  geom_point(aes(x = min_weight95, y = 0), 
+             shape = 21, size = 2, fill = "white", 
+             colour = "black", stroke = 1.5) + 
+  geom_point(aes(x = min_weight98, y = 0), 
+             shape = 21, size = 2, fill = "white", 
+             colour = "black", stroke = 1.5) + 
+  scale_x_continuous(expand = expansion(mult = c(0, 0.05))) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0.05))) + 
+  theme(panel.background = element_blank(),
+        panel.grid.major = element_line(colour = "grey92"),
+        legend.position = 'top',
+        legend.text = element_text(size=10),
+        legend.title = element_text(size=12),
+        axis.text.x = element_text(size=10),
+        axis.title.x = element_text(size=20, face="bold"),
+        axis.title.y = element_text(size=14, face="bold"),
+        axis.text.y = element_text(size=10),
+        axis.line=element_line()) + 
+  xlab(expression(omega)) + 
+  ylab('log(OR)') + 
+  scale_color_brewer(palette = 'Set1')
+```
+
+Alternatively, we could calculate the posterior probability of efficacy at the borrowing fraction we preset at the design stage, and confirm that it crosses the 97.5% (99%) threshold --
+```{r Lupus-analysis-post-efficacy-chunk, echo = TRUE, cache = TRUE}
+post_prob_effic95 = df %>% 
+  filter(Weight == .26 & Coverage == '95%') %>% 
+  mutate(post_effic = pnorm(2*qnorm(.975)*Mean/(UL-LL)))
+
+post_prob_effic95
+
+post_prob_effic98 = df %>% 
+  filter(Weight == Weight[which.min(abs(Weight - .35))] 
+         & Coverage == '98%') %>% 
+  mutate(post_effic = pnorm(2*qnorm(.99)*Mean/(UL-LL)))
+
+post_prob_effic98
+```
+
+
+# References
+<bibliography entry-spacing = "2" >
+<div id="refs"></div>
