@@ -44,7 +44,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-The following tutorial is a step-by-step demo of the methods presented in our paper. You may use the attached R files to replicate the below results or experiment with it.
+The following tutorial is a step-by-step demo of the methods presented in [our paper](https://onlinelibrary.wiley.com/doi/10.1002/pst.2318). You may use [our code](https://github.com/oharari/Bayesian-borrowing-in-a-meta-analytic-setting/tree/main/Code) to reproduce the results from the paper or experiment with it.
 
 # Before we start
 Please make sure the following libraries are installed on your computer --
